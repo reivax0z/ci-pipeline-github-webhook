@@ -20,6 +20,11 @@ You need the following components:
 The overall architecture is detailed here:
 ![architecture-diagram](./architecture-diagram.png)
 
+## Pre-requisites
+
+- `AWS cli` installed
+- Github account with repo containing a `build.sh` script at the root
+- Github oauth token saved in AWS SSM parameter store as `GitHubOAuthToken`
 
 ## Automatic Setup
 
@@ -76,7 +81,7 @@ Upload the file into an S3 bucket, ie: `runtime-bucket/ci-pipeline/ci-build-trig
 
 The lambda will be triggered by the API Gateway (once request 
 has been authorized), parse the GitHub event payload and trigger 
-a new build of the `github_repo_name` in case of `PR` and `PUSH` 
+a new build of the `<github_repo_name>` in case of `PR` and `PUSH` 
 events.
 
 
@@ -110,7 +115,7 @@ Once all the AWS components have been setup, you will need to:
 - Go to `Branches` tab and enable protection for `master` branch
 - Select `Require status checks to pass before merging` 
 - Select `Require branches to be up to date before merging`
-- Tick `github_repo_name-ci-pipeline`
+- Tick `<github_repo_name>-ci-pipeline`
 
 
 This will force GitHub to request a valid success `status` 
