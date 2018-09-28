@@ -1,0 +1,84 @@
+Version: 0.2
+
+Env:
+ parameter-store:
+   GITHUBOAUTHTOKEN: "GitHubOAuthToken"
+
+Phases:
+
+ pre_build:
+   commands:
+     # Fetch code from Github
+     - |
+       cat > ./codebuild_prebuild_commands.sh << 'END_COMMANDS_HEREDOC'
+       #!/bin/bash -e
+       set -o pipefail
+
+       find . ! -name "." | xargs rm -rf
+
+       echo "Fetching '${APP_NAME}' codebase on branch '${GIT_BRANCH}' with commit '${GIT_COMMIT}'"
+       git clone "https://${GITHUBOAUTHTOKEN}@github.com/${GIT_ACCOUNT}/${GIT_REPO}.git" .
+       git checkout "${GIT_COMMIT}" -B "${GIT_BRANCH}"
+
+       echo "Posting 'pending' status to GitHub"
+       curl -X POST \
+         -H "Content-Type: application/json" \
+         -H "Authorization: token ${GITHUBOAUTHTOKEN}" \
+         -d "{\"state\": \"pending\", \"context\": \"${GIT_REPO}-ci-pipeline\"}" \
+         "https://api.github.com/repos/${GIT_ACCOUNT}/${GIT_REPO}/statuses/${GIT_COMMIT}"
+
+       END_COMMANDS_HEREDOC
+
+     - chmod +x ./codebuild_prebuild_commands.sh
+     - ./codebuild_prebuild_commands.sh
+
+ build:
+   commands:
+     # Build steps, assumes the original project has a 'build.sh' script at its root folder
+     - |
+       cat > ./codebuild_commands.sh << 'END_COMMANDS_HEREDOC'
+       #!/bin/bash -e
+       set -o pipefail
+
+       # Get git metadata for version numbering checks
+       echo "Building ${APP_NAME} with commit '${GIT_COMMIT}'"
+
+       # Run the build script
+       ./build.sh
+
+       END_COMMANDS_HEREDOC
+
+     - chmod +x ./codebuild_commands.sh
+     - ./codebuild_commands.sh
+
+ post_build:
+   commands:
+     # Send build information back to Github
+     - |
+       cat > ./codebuild_postbuild_commands.sh << 'END_COMMANDS_HEREDOC'
+       #!/bin/bash -e
+       set -o pipefail
+
+       BUILD_RESULT="${CODEBUILD_BUILD_SUCCEEDING}"
+       echo "Build results: '${BUILD_RESULT}'"
+
+       STATUS="pending"
+       if [[ ${BUILD_RESULT} -eq 1 ]]; then
+           STATUS="success"
+       else
+           STATUS="failure"
+       fi
+
+       CONTENT="{\"state\": \"${STATUS}\", \"context\": \"${GIT_REPO}-ci-pipeline\"}"
+
+       echo "Posting '${STATUS}' status to GitHub"
+       curl -X POST \
+         -H "Content-Type: application/json" \
+         -H "Authorization: token ${GITHUBOAUTHTOKEN}" \
+         -d "${CONTENT}" \
+         "https://api.github.com/repos/${GIT_ACCOUNT}/${GIT_REPO}/statuses/${GIT_COMMIT}"
+
+       END_COMMANDS_HEREDOC
+
+     - chmod +x ./codebuild_postbuild_commands.sh
+     - ./codebuild_postbuild_commands.sh

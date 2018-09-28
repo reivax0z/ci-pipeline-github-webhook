@@ -1,0 +1,397 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Contains the setup for the GitHub webhook handler
+
+Parameters:
+  S3BucketName:
+    Description: S3 Bucket Name containing Lambda code
+    Type: String
+
+  CodeS3KeyConfig:
+    Description: Codebuild config file's path in S3
+    Type: String
+    Default: ci-pipeline/ci-build-config.zip
+
+  CodeS3KeyLambdaPipeline:
+    Description: Pipeline Lambda package's path in S3
+    Type: String
+    Default: ci-pipeline/ci-build-trigger.zip
+
+  CodeS3KeyLambdaAuthorize:
+    Description: Authorizer Lambda package's path in S3
+    Type: String
+    Default: ci-pipeline/ci-build-authorizer.zip
+
+  # Code repo config
+  RepoAccount:
+    Description: GitHub ACCOUNT
+    Type: String
+
+  RepoName:
+    Description: GitHub REPOSITORY
+    Type: String
+
+  RepoBranch:
+    Description: GitHub BRANCH (will be configured automatically via the webhook)
+    Type: String
+    Default: master
+
+  RepoCommit:
+    Description: GitHub SHA / COMMIT (will be configured automatically via the webhook)
+    Type: String
+    Default: dummy
+
+Resources:
+  # Api Gateway
+  WebHookApi:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: !Sub "${RepoName}-ci-pipeline-manager-api"
+      Description: "An API that handles GitHub webhooks and manages the relevant CI pipeline"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+      Body:
+        swagger: 2.0
+        info:
+          version: 0.0.1
+          title: "GitHub PR Webhook API"
+        basePath: /
+        schemes:
+          - https
+        definitions:
+          Empty:
+            type: object
+        paths:
+          github-webhook:
+            post:
+              summary: "Takes a GitHub webhook event payload and triggers the CI pipeline manager Lambda function"
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                "200":
+                  description: "Request has been successfully processed"
+                  schema:
+                    $ref: "#/definitions/Empty"
+              security:
+              - ipAuthorizer: []
+              x-amazon-apigateway-integration:
+                type: "aws"
+                credentials: !GetAtt [WebHookRole, Arn]
+                responses:
+                  default:
+                    statusCode: "200"
+                passthroughBehavior: "when_no_templates"
+                requestTemplates:
+                  application/json:
+                    !Join
+                    - ""
+                    - - "{\n"
+                      - "\"body\" : $input.json('$'),\n"
+                      - "\"headers\": {\n"
+                      - "#foreach($param in $input.params().header.keySet())\n"
+                      - "\"$param\": \"$util.escapeJavaScript($input.params().header.get($param))\" #if($foreach.hasNext),#end\n"
+                      - "#end\n"
+                      - "}\n"
+                      - "}\n"
+                httpMethod: "POST"
+                uri:
+                  !Join
+                  - ""
+                  - - "arn:aws:apigateway:"
+                    - !Ref "AWS::Region"
+                    - ":lambda:path//2015-03-31/functions/"
+                    - !GetAtt [LambdaPipelineFunction, Arn]
+                    - "/invocations"
+        securityDefinitions:
+          ipAuthorizer:
+            type: "apiKey"
+            name: "Unused"
+            in: "header"
+            x-amazon-apigateway-authtype: "custom"
+            x-amazon-apigateway-authorizer:
+              authorizerResultTtlInSeconds: 300
+              identitySource: "context.identity.sourceIp"
+              authorizerUri:
+                !Join
+                - ""
+                - - "arn:aws:apigateway:"
+                  - !Ref "AWS::Region"
+                  - ":lambda:path/2015-03-31/functions/"
+                  - !GetAtt [LambdaAuthorizer, Arn]
+                  - "/invocations"
+              authorizerCredentials: !GetAtt [AuthorizerRole, Arn]
+              type: "request"
+
+  WebHookApiDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref WebHookApi
+      StageName: "WebhookStage"
+
+  WebHookRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      ManagedPolicyArns:
+      - "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+      Policies:
+      - PolicyName: "InvokeLambda"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "lambda:InvokeAsync"
+            - "lambda:InvokeFunction"
+            Resource:
+            - !GetAtt [LambdaPipelineFunction, Arn]
+            Effect: "Allow"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - "sts:AssumeRole"
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "apigateway.amazonaws.com"
+
+  AuthorizerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      Policies:
+      - PolicyName: "InvokeLambda"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "lambda:InvokeAsync"
+            - "lambda:InvokeFunction"
+            Resource:
+            - !GetAtt [LambdaAuthorizer, Arn]
+            Effect: "Allow"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - "sts:AssumeRole"
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "apigateway.amazonaws.com"
+
+  # Lambda performing the authorization
+  LambdaAuthorizer:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "lambda_function.lambda_handler"
+      FunctionName: !Sub "${RepoName}-ci-pipeline-manager-api-authorizer"
+      Role: !GetAtt [LambdaAuthorizerExecutionRole, Arn]
+      Runtime: "python2.7"
+      Timeout: 25
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref CodeS3KeyLambdaAuthorize
+
+  LambdaAuthorizerExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      Policies:
+      - PolicyName: "CloudwatchLogs"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "logs:CreateLogGroup"
+            - "logs:CreateLogStream"
+            - "logs:GetLogEvents"
+            - "logs:PutLogEvents"
+            Resource:
+            - "arn:aws:logs:*:*:*"
+            Effect: "Allow"
+      # Get SSM params
+      - PolicyName: "ParameterStore"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "ssm:GetParameters"
+            - "ssm:GetParameter"
+            Resource: "*"
+            Effect: Allow
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - "sts:AssumeRole"
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "lambda.amazonaws.com"
+
+  # Lambda performing the pipeline management
+  LambdaPipelineFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: !Sub "${RepoName}-ci-pipeline-manager-lambda"
+      Handler: "lambda_function.lambda_handler"
+      Role: !GetAtt [LambdaPipelineExecutionRole, Arn]
+      Environment:
+        Variables:
+          CODEBUILD_PROJECT_NAME: !Sub "${AWS::StackName}-build"
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref CodeS3KeyLambdaPipeline
+      Runtime: "python2.7"
+      Timeout: 300
+
+  LambdaPipelineExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      Policies:
+      - PolicyName: "CloudwatchLogs"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "logs:CreateLogGroup"
+            - "logs:CreateLogStream"
+            - "logs:GetLogEvents"
+            - "logs:PutLogEvents"
+            Resource:
+            - "arn:aws:logs:*:*:*"
+            Effect: "Allow"
+      - PolicyName: "CodeBuild"
+        PolicyDocument:
+          Statement:
+          - Action:
+            - "codebuild:*"
+            Resource: "*"
+            Effect: "Allow"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - "sts:AssumeRole"
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "lambda.amazonaws.com"
+
+  # Job performing the build
+  BuildProject:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: !Sub "${AWS::StackName}-build"
+      Description:
+        !Sub "Builds ${RepoName} for a given branch"
+      ServiceRole: !GetAtt [BuildProjectRole, Arn]
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: no_artifacts
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/docker:17.09.0
+        EnvironmentVariables:
+          - Name: STACKNAME
+            Value: !Ref "AWS::StackName"
+
+          - Name: GIT_ACCOUNT
+            Value: !Ref RepoAccount
+
+          - Name: GIT_REPO
+            Value: !Ref RepoName
+
+          - Name: GIT_BRANCH
+            Value: !Ref RepoBranch
+
+          - Name: GIT_COMMIT
+            Value: !Ref RepoCommit
+
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref "AWS::Region"
+      Source:
+        # Hack: set it as S3 to avoid the GitHub config & auth setup
+        # (this is done at runtime by code in the buildspec itself)
+        Type: S3
+        Location: !Sub "arn:aws:s3:::${S3BucketName}/${CodeS3KeyConfig}"
+
+  BuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: BuildProjectPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Get SSM params
+              - Effect: Allow
+                Action:
+                  - "ssm:GetParameters"
+                Resource:
+                  - "*"
+              # Log access
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:\
+                          /aws/codebuild/\
+                          ${AWS::StackName}-build"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:\
+                          /aws/codebuild/\
+                          ${AWS::StackName}-build:*"
+              # Access to S3 bucket to retrieve pipeline source artifacts
+              # and to upload output artifacts
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:List*"
+                  - "s3:Put*"
+                Resource:
+                  - "arn:aws:s3:::codepipeline-ap-southeast-2-*"
+              # Config from S3
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}/${CodeS3KeyConfig}"
+              # KMS to read S3 encrypted content
+              - Effect: "Allow"
+                Action:
+                  - "kms:Decrypt"
+                  - "kms:Encrypt"
+                  - "kms:GenerateDataKey"
+                  - "kms:ReEncrypt"
+                Resource: '*'
+              # Allow actions with ECR
+              - Effect: Allow
+                Action:
+                    - "ecr:GetAuthorizationToken"
+                    - "ecr:GetDownloadUrlForLayer"
+                    - "ecr:BatchGetImage"
+                    - "ecr:BatchCheckLayerAvailability"
+                    - "ecr:PutImage"
+                    - "ecr:DescribeImages"
+                    - "ecr:UploadLayerPart"
+                    - "ecr:InitiateLayerUpload"
+                    - "ecr:CompleteLayerUpload"
+                Resource: '*'
+
+Outputs:
+  WebHookApi:
+    Description: WebHook Api Gateway
+    Value: !Ref WebHookApi
+
+  WebHookApiDeployment:
+    Description: WebHook Api deployment
+    Value: !Ref WebHookApiDeployment
