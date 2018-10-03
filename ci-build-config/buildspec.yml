@@ -16,7 +16,7 @@ Phases:
 
        find . ! -name "." | xargs rm -rf
 
-       echo "Fetching '${APP_NAME}' codebase on branch '${GIT_BRANCH}' with commit '${GIT_COMMIT}'"
+       echo "Fetching '${GIT_REPO}' from '${GIT_ACCOUNT}' codebase on branch '${GIT_BRANCH}' with commit '${GIT_COMMIT}'"
        git clone "https://${GITHUBOAUTHTOKEN}@github.com/${GIT_ACCOUNT}/${GIT_REPO}.git" .
        git checkout "${GIT_COMMIT}" -B "${GIT_BRANCH}"
 
@@ -41,7 +41,7 @@ Phases:
        set -o pipefail
 
        # Get git metadata for version numbering checks
-       echo "Building ${APP_NAME} with commit '${GIT_COMMIT}'"
+       echo "Building '${GIT_REPO}' from '${GIT_ACCOUNT}' with commit '${GIT_COMMIT}'"
 
        # Run the build script
        ./build.sh

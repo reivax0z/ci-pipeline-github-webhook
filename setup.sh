@@ -31,18 +31,16 @@ function check_aws_connectivity() {
 check_aws_connectivity
 
 # Process script arguments
-while :
+while [ ! $# -eq 0 ]
 do
   case "${1}" in
     -c | --company)
       git_company="${2}"
       shift 2
-      break
       ;;
     -r | --repo)
       git_repo="${2}"
       shift 2
-      break
       ;;
     -h | --help)
       usage
@@ -66,8 +64,8 @@ credential_aws_account_id=$(aws sts get-caller-identity \
   --output text)
 
 pipeline_name="${git_repo}-github-webhook"
-target_s3_bucket="${credential_aws_account_id}-build-system-data-build-resources"
-target_s3_prefix="ci-pipeline"
+target_s3_bucket="${credential_aws_account_id}-build-resources"
+target_s3_prefix="${git_repo}-ci-pipeline"
 
 echo "INFO: Requesting to deploy '${pipeline_name}' for '${git_company}' in '${credential_aws_account_id}'"
 
@@ -104,6 +102,7 @@ aws cloudformation deploy \
   --capabilities 'CAPABILITY_IAM' \
   --parameter-overrides \
       S3BucketName="${target_s3_bucket}" \
+      CodeS3PrefixConfig="${target_s3_prefix}" \
       GitAccount="${git_company}"
       GitRepository="${git_repo}"
 

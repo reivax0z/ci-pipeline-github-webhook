@@ -17,17 +17,7 @@ def start_new_build(branch, commit):
     return codebuild_client.start_build(
         projectName=os.environ['CODEBUILD_PROJECT_NAME'],
         environmentVariablesOverride=[
-            {
-                'name': 'GIT_ACCOUNT',
-                'value': os.environ['GIT_ACCOUNT'],
-                'type': 'PLAINTEXT'
-            },
-            {
-                'name': 'GIT_REPO',
-                'value': os.environ['GIT_REPO'],
-                'type': 'PLAINTEXT'
-            },
-            {
+           {
                 'name': 'GIT_BRANCH',
                 'value': branch,
                 'type': 'PLAINTEXT'
@@ -72,7 +62,7 @@ def lambda_handler(event, context):
         elif event_type == 'push':
 
             # Detect branch deletion, no build request
-            if event['body']['deleted'] == True:
+            if event['body']['deleted']:
                 print('Pass through event')
                 return
 

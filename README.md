@@ -25,6 +25,7 @@ The overall architecture is detailed here:
 - `AWS cli` installed
 - Github account with repo containing a `build.sh` script at the root
 - Github oauth token saved in AWS SSM parameter store as `GitHubOAuthToken`
+- S3 bucket `${credential_aws_account_id}-build-resources` exists
 
 ## Automatic Setup
 
