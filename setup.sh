@@ -1,5 +1,10 @@
 #!/bin/bash -e
 
+declare credential_aws_account_id
+declare pipeline_name
+declare target_s3_bucket
+declare target_s3_prefix
+
 function usage() {
   echo ""
   echo "Usage"
@@ -16,19 +21,16 @@ function usage() {
 }
 
 function check_aws_connectivity() {
-  echo "Checking aws connectivity..."
+  echo "INFO: Checking aws connectivity..."
   set +e
   if ! aws sts get-caller-identity > /dev/null
   then
-    echo "Error accessing AWS."
-    echo "Please make sure credentials are set properly. (Have you run 'aws configure'?)"
+    echo "ERROR: Error accessing AWS."
+    echo "ERROR: Please make sure credentials are set properly. (Have you run 'aws configure'?)"
     exit 1
   fi
   set -e
 }
-
-# Check credentials are provided
-check_aws_connectivity
 
 # Process script arguments
 while [ ! $# -eq 0 ]
@@ -59,51 +61,61 @@ do
   esac
 done
 
-credential_aws_account_id=$(aws sts get-caller-identity \
-  --query 'Account' \
-  --output text)
+function create_config_bucket() {
+  aws s3 mb "s3://${target_s3_bucket}"
+}
 
-pipeline_name="${git_repo}-github-webhook"
-target_s3_bucket="${credential_aws_account_id}-build-resources"
-target_s3_prefix="${git_repo}-ci-pipeline"
-
-echo "INFO: Requesting to deploy '${pipeline_name}' for '${git_company}' in '${credential_aws_account_id}'"
-
-# TODO: create S3 bucket if not exist
 function build_and_upload_dependency() {
-  dependency="$1"
+  local dependency="$1"
   cd ./"${dependency}"
   ./package.sh
   aws s3 cp \
     ./"${dependency}".zip \
-    "s3://${target_s3_bucket}/${target_s3_prefix}/${dependency}.zip" \
-    --sse 'aws:kms' \
-    --sse-kms-key-id 'alias/aws/s3'
+    "s3://${target_s3_bucket}/${target_s3_prefix}/${dependency}.zip"
   cd ..
 }
 
-# Auto install, zip & upload the dependencies (Lambda, CodeBuild...)
-build_and_upload_dependency "ci-build-config"
-build_and_upload_dependency "ci-build-authorizer"
-build_and_upload_dependency "ci-build-trigger"
+function main() {
+  # Check credentials are provided
+  check_aws_connectivity
 
-# Prepare Cloudformation
-aws cloudformation package \
-  --template-file ./ci-build-stack.yml \
-  --s3-bucket "${target_s3_bucket}" \
-  --s3-prefix "${target_s3_prefix}" \
-  --kms-key-id 'alias/aws/s3' \
-  --output-template-file ./output_template.yml
+  credential_aws_account_id=$(aws sts get-caller-identity \
+    --query 'Account' \
+    --output text)
 
-# Spin up the entire stack
-aws cloudformation deploy \
-  --stack-name "${pipeline_name}" \
-  --template-file ./output_template.yml \
-  --capabilities 'CAPABILITY_IAM' \
-  --parameter-overrides \
-      S3BucketName="${target_s3_bucket}" \
-      CodeS3PrefixConfig="${target_s3_prefix}" \
-      GitAccount="${git_company}"
-      GitRepository="${git_repo}"
+  pipeline_name="${git_repo}-github-webhook"
+  target_s3_bucket="${credential_aws_account_id}-build-resources"
+  target_s3_prefix="${git_repo}-ci-pipeline"
 
-echo "INFO: Successfully deployed '${pipeline_name}' for '${git_company}' in '${credential_aws_account_id}'"
+  echo "INFO: Requesting to deploy '${pipeline_name}' for '${git_company}' in '${credential_aws_account_id}'"
+
+  # Prepare config
+  create_config_bucket
+
+  # Auto install, zip & upload the dependencies (Lambda, CodeBuild...)
+  build_and_upload_dependency "ci-build-config"
+  build_and_upload_dependency "ci-build-authorizer"
+  build_and_upload_dependency "ci-build-trigger"
+
+  # Prepare Cloudformation stack
+  aws cloudformation package \
+    --template-file ./ci-build-stack.yml \
+    --s3-bucket "${target_s3_bucket}" \
+    --s3-prefix "${target_s3_prefix}" \
+    --output-template-file ./output_template.yml
+
+  # Deploy the stack (API Gateway, Lambdas...)
+  aws cloudformation deploy \
+    --stack-name "${pipeline_name}" \
+    --template-file ./output_template.yml \
+    --capabilities 'CAPABILITY_IAM' \
+    --parameter-overrides \
+        S3BucketName="${target_s3_bucket}" \
+        CodeS3PrefixConfig="${target_s3_prefix}" \
+        GitAccount="${git_company}"
+        GitRepository="${git_repo}"
+
+  echo "INFO: Successfully deployed '${pipeline_name}' for '${git_company}' in '${credential_aws_account_id}'"
+}
+
+main
